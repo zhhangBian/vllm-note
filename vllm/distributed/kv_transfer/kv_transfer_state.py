@@ -13,6 +13,7 @@ from vllm.distributed.parallel_state import get_world_group
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
+# 全局变量，用于存储connector
 _KV_CONNECTOR_AGENT: Optional[KVConnectorBaseType] = None
 
 
@@ -48,6 +49,7 @@ def is_v1_kv_transfer_group(
     return isinstance(connector, KVConnectorBase_V1)
 
 
+# 初始化相应的connector
 def ensure_kv_transfer_initialized(vllm_config: "VllmConfig") -> None:
     """
     Initialize KV cache transfer parallel group.

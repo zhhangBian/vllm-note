@@ -1345,6 +1345,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 num_tokens_across_dp=num_tokens_across_dp,
                 skip_cuda_graphs=skip_cuda_graphs,
         ):
+            # 在推理前加载相应的KVC
             self.maybe_setup_kv_connector(scheduler_output)
 
             model_output = self.model(
@@ -1354,7 +1355,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 inputs_embeds=inputs_embeds,
             )
 
+            # 在推理后保存相应的KVC
             self.maybe_wait_for_kv_save()
+            # 获取已经完成加载或者保存的请求
             finished_sending, finished_recving = (
                 self.get_finished_kv_transfers(scheduler_output))
 
@@ -1624,6 +1627,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         output.finished_recving = finished_recving
         return output
 
+    # 在模型推理前后，设置和启动 connector 相关操作
     @staticmethod
     def maybe_setup_kv_connector(scheduler_output: "SchedulerOutput"):
         # Update KVConnector with the KVConnector metadata forward().
@@ -1631,6 +1635,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             kv_connector = get_kv_transfer_group()
             assert isinstance(kv_connector, KVConnectorBase_V1)
             assert scheduler_output.kv_connector_metadata is not None
+            # 设置相应的传输数据：从scheduler的输出结果中获取
             kv_connector.bind_connector_metadata(
                 scheduler_output.kv_connector_metadata)
 
@@ -1638,11 +1643,13 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # These transfers are designed to be async and the requests
             # involved may be disjoint from the running requests.
             # Do this here to save a collective_rpc.
+            # 开始加载相应的KVC
             kv_connector.start_load_kv(get_forward_context())
 
     @staticmethod
     def maybe_wait_for_kv_save() -> None:
         if has_kv_transfer_group():
+            # 等待保存相应的KVC
             get_kv_transfer_group().wait_for_save()
 
     @staticmethod
