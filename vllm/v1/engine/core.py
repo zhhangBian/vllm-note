@@ -231,8 +231,11 @@ class EngineCore:
         # or finished and not yet removed from the batch.
         if not self.scheduler.has_requests():
             return {}, False
+        # 调度器调度
         scheduler_output = self.scheduler.schedule()
+        # 根据调度结果，执行模型
         model_output = self.execute_model(scheduler_output)
+        # 根据执行结果，更新调度器状态
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, model_output)  # type: ignore
 

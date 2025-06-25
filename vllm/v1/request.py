@@ -193,7 +193,9 @@ class Request:
 class RequestStatus(enum.IntEnum):
     """Status of a request."""
     WAITING = enum.auto()
+    # 用于结构化输出的场景
     WAITING_FOR_FSM = enum.auto()
+    # 用于异步加载KVC的场景
     WAITING_FOR_REMOTE_KVS = enum.auto()
     RUNNING = enum.auto()
     PREEMPTED = enum.auto()

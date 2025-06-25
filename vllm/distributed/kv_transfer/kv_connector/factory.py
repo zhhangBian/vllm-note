@@ -21,6 +21,8 @@ logger = init_logger(__name__)
 class KVConnectorFactory:
     _registry: dict[str, Callable[[], type[KVConnectorBaseType]]] = {}
 
+    # 注册相关的connector
+    # 在vllm初始化阶段进行注册，可用的connector是有限的
     @classmethod
     def register_connector(cls, name: str, module_path: str,
                            class_name: str) -> None:
@@ -64,6 +66,7 @@ class KVConnectorFactory:
         if connector_name in cls._registry:
             connector_cls = cls._registry[connector_name]()
         else:
+            # 动态导入相关的connector，以减少相应的依赖
             connector_module_path = kv_transfer_config.kv_connector_module_path
             if connector_module_path is None:
                 raise ValueError(
