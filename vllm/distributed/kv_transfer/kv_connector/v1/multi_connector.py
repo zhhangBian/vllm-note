@@ -29,6 +29,8 @@ class MultiKVConnectorMetadata(KVConnectorMetadata):
     extra_async_saves: Optional[dict[str, int]] = None
 
 
+# load：从第一个connector中获取可以加载的token数量，然后根据token数量从其他connector中获取可以加载的token数量
+# save：将token保存到所有connector中
 class MultiConnector(KVConnectorBase_V1):
     """
     A wrapper for using multiple KVConnectors at the same time.
@@ -41,6 +43,7 @@ class MultiConnector(KVConnectorBase_V1):
 
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
+        # 设置多个connector，每个connector负责不同的kv缓存
         self._connectors: list[KVConnectorBase_V1] = []
         ktcs = vllm_config.kv_transfer_config.kv_connector_extra_config.get(
             "connectors")
@@ -84,20 +87,24 @@ class MultiConnector(KVConnectorBase_V1):
     # ==============================
     # Worker-side methods
     # ==============================
+    # 开始加载KVC，调用所有connector的start_load_kv
     def start_load_kv(self, forward_context: "ForwardContext",
                       **kwargs) -> None:
         for c in self._connectors:
             c.start_load_kv(forward_context, **kwargs)
 
+    # 等待layer加载完成，调用所有connector的wait_for_layer_load
     def wait_for_layer_load(self, layer_name: str) -> None:
         for c in self._connectors:
             c.wait_for_layer_load(layer_name)
 
+    # 保存KVC，调用所有connector的save_kv_layer
     def save_kv_layer(self, layer_name: str, kv_layer: torch.Tensor,
                       attn_metadata: "AttentionMetadata", **kwargs) -> None:
         for c in self._connectors:
             c.save_kv_layer(layer_name, kv_layer, attn_metadata, **kwargs)
 
+    # 等待保存完成，调用所有connector的wait_for_save
     def wait_for_save(self):
         for c in self._connectors:
             c.wait_for_save()
@@ -132,13 +139,16 @@ class MultiConnector(KVConnectorBase_V1):
     # ==============================
     # Scheduler-side methods
     # ==============================
+    # TODO：这里可以进行一个简单的修改，改为匹配最大的token数量
     def get_num_new_matched_tokens(
         self,
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
         to_return = (0, False)
+        # 匹配第一个有token的connector，然后根据token数量从其他connector中获取可以加载的token数量
         for i, c in enumerate(self._connectors):
+            # 获取匹配的token数量
             toks, load_async = c.get_num_new_matched_tokens(
                 request, num_computed_tokens)
             # The first connector that has new matched tokens will be assigned
@@ -154,15 +164,18 @@ class MultiConnector(KVConnectorBase_V1):
         chosen_connector = self._requests_to_connector.get(
             request.request_id, -1)
         empty_blocks = blocks.new_empty()
+        # 只对选定的 connector 传递实际的 blocks 和 token 数量
         for i, c in enumerate(self._connectors):
             if i == chosen_connector:
                 # Forward call to the chosen connector (if any).
                 c.update_state_after_alloc(request, blocks,
                                            num_external_tokens)
+            # 对其他 connector 传递空 blocks 和 0 token 数量
             else:
                 # Call with empty blocks for other connectors.
                 c.update_state_after_alloc(request, empty_blocks, 0)
 
+    # 构建元数据，用于在调度器和工作者之间传递信息
     def build_connector_meta(
             self,
             scheduler_output: SchedulerOutput) -> MultiKVConnectorMetadata:
@@ -174,6 +187,7 @@ class MultiConnector(KVConnectorBase_V1):
             self._extra_async_saves = {}
         return metadata
 
+    # 通知 Worker 端请求已完成，返回是否异步保存/发送，以及可选的 KVTransferParams
     def request_finished(
         self,
         request: "Request",
@@ -181,6 +195,8 @@ class MultiConnector(KVConnectorBase_V1):
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         async_saves = 0
         kv_txfer_params = None
+        # 对所有的connector进行遍历，如果某个connector需要异步保存，则将async_saves加1
+        # 如果某个connector需要异步发送，则将kv_txfer_params设置为该connector的KVTransferParams
         for c in self._connectors:
             async_save, txfer_params = c.request_finished(request, blocks)
             if async_save:
@@ -192,6 +208,7 @@ class MultiConnector(KVConnectorBase_V1):
                     raise RuntimeError(
                         "Only one connector can produce KV transfer params")
                 kv_txfer_params = txfer_params
+        # 如果需要异步保存的connector数量大于1，则将async_saves减1，并存储到self._extra_async_saves中
         if async_saves > 1:
             self._extra_async_saves[request.request_id] = async_saves - 1
 

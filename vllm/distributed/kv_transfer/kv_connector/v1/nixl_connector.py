@@ -37,6 +37,9 @@ if TYPE_CHECKING:
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
     from vllm.v1.request import Request
 
+# 使用nvidia的接口进行卡间通信
+# 不支持gpu-cpu之间的数据搬运，只能进行gpu-gpu之间的数据搬运
+
 Transfer = tuple[int, float]  # (xfer_handle, start_time)
 EngineId = str
 ReqId = str
@@ -53,6 +56,12 @@ except ImportError:
     NixlWrapper = None
 
 
+# "Agent"（代理）是 NIXL 库中的概念，代表一个可以参与 NIXL 数据传输的实体
+# 通常对应到单个 GPU 设备
+# - 传输端点：作为 NIXL 数据传输的端点
+# - 内存管理：管理特定 GPU 上的内存区域，可以被 NIXL 注册和访问
+# - 细粒度控制：允许在 GPU 级别进行精确的数据传输控制
+
 class NixlAgentMetadata(
         msgspec.Struct,
         omit_defaults=True,  # type: ignore[call-arg]
@@ -67,6 +76,7 @@ class NixlAgentMetadata(
     attn_backend_name: str
 
 
+# 需要传送的元数据格式
 @dataclass
 class ReqMeta:
     local_block_ids: list[int]
@@ -81,12 +91,14 @@ class NixlConnectorMetadata(KVConnectorMetadata):
     def __init__(self):
         self.requests: dict[ReqId, ReqMeta] = {}
 
+    # 添加新的请求
     def add_new_req(
         self,
         request_id: ReqId,
         local_block_ids: list[int],
         kv_transfer_params: dict[str, Any],
     ):
+        # 存储请求相关的元数据，包括本地和远程的 block_ids，以及远程引擎的连接信息
         self.requests[request_id] = ReqMeta(
             local_block_ids=local_block_ids,
             remote_block_ids=kv_transfer_params["remote_block_ids"],
@@ -103,6 +115,8 @@ class NixlConnector(KVConnectorBase_V1):
         assert vllm_config.kv_transfer_config.engine_id is not None
         self.engine_id: EngineId = vllm_config.kv_transfer_config.engine_id
 
+        # 初始化scheduler和worker
+        # 设置两种不同的角色，具体的功能实现按照角色来区分
         if role == KVConnectorRole.SCHEDULER:
             self.connector_scheduler: Optional[NixlConnectorScheduler] = \
                 NixlConnectorScheduler(vllm_config, self.engine_id)
@@ -116,6 +130,7 @@ class NixlConnector(KVConnectorBase_V1):
     # Scheduler Side Methods
     ############################################################
 
+    # 获取可以从外部 KV Cache 加载的新 token 数量，以及是否异步加载
     def get_num_new_matched_tokens(
             self, request: "Request",
             num_computed_tokens: int) -> tuple[int, bool]:
@@ -427,6 +442,7 @@ class NixlConnectorWorker:
         # finish reading before safely freeing the blocks.
         self.consumer_notification_counts_by_req = defaultdict[ReqId, int](int)
 
+    # 析构函数，关闭后台的连接线程
     def __del__(self):
         """Cleanup background threads on destruction."""
         self._handshake_initiation_executor.shutdown(wait=False)
@@ -883,6 +899,7 @@ class NixlConnectorWorker:
                 del transfers[req_id]
         return done_req_ids
 
+    # 开始加载KVC，调用nixl_xfer进行卡间的数据搬运
     def start_load_kv(self, metadata: NixlConnectorMetadata):
         """
         Start loading by triggering non-blocking nixl_xfer.
@@ -944,6 +961,8 @@ class NixlConnectorWorker:
             remote_block_ids=meta.remote_block_ids,
         )
 
+
+    # 读取数据，调用nixl_xfer进行卡间的数据搬运 
     def _read_blocks(
         self,
         local_block_ids: list[int],
@@ -961,6 +980,7 @@ class NixlConnectorWorker:
         # saturate IB with heterogeneous TP sizes. We should remove the staging
         # blocks until we are ready.
 
+        # 计算tp_ratio，即本地tp_size除以远程tp_size：解决两端tp_size不一致的问题
         # Number of D TP workers that will read from dst P. Propagate tp_ratio
         # on notification so that dst worker can wait before freeing blocks.
         tp_ratio = self._tp_size[
@@ -970,18 +990,21 @@ class NixlConnectorWorker:
         # Full prefix cache hit: do not need to read remote blocks,
         # just notify P worker that we have the blocks we need.
         num_local_blocks = len(local_block_ids)
+        # 完全前缀缓存命中：不需要读取远程块，只需通知 P worker
         if num_local_blocks == 0:
             remote_rank = self.tp_rank // tp_ratio
             agent_name = self._remote_agents[dst_engine_id][remote_rank]
             self.nixl_wrapper.send_notif(agent_name, notif_msg=notif_id)
             return
 
+        # 部分前缀缓存命中：只读取未计算的块
         # Partial prefix cache hit: just read uncomputed blocks.
         num_remote_blocks = len(remote_block_ids)
         assert num_local_blocks <= num_remote_blocks
         if num_local_blocks < num_remote_blocks:
             remote_block_ids = remote_block_ids[-num_local_blocks:]
 
+        # 获取本地和远程的xfer side handles
         # Get side handles.
         local_xfer_side_handle = self.src_xfer_side_handle
         remote_xfer_side_handle = self.dst_xfer_side_handles[dst_engine_id]

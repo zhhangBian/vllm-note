@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+# 这个文件没有什么值得看的，基本直接调用了LMCache中的对应接口
 class LMCacheConnectorV1(KVConnectorBase_V1):
 
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):

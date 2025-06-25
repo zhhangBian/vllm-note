@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+# 卡间通信的两种角色
 class KVConnectorRole(enum.Enum):
     # Connector running in the scheduler process
     SCHEDULER = 0
@@ -71,6 +72,7 @@ class KVConnectorBase_V1(ABC):
         logger.warning(
             "Initializing KVConnectorBase_V1. This API is experimental and "
             "subject to change in the future as we iterate the design.")
+        # 需要在卡间传送的元数据
         self._connector_metadata = KVConnectorMetadata()
         self._vllm_config = vllm_config
         self._role = role
@@ -83,6 +85,7 @@ class KVConnectorBase_V1(ABC):
     # Worker-side methods
     # ==============================
 
+    # 绑定相应的元数据，实际含义是给worker需要传送的数据赋初值
     def bind_connector_metadata(
             self, connector_metadata: KVConnectorMetadata) -> None:
         """Set the connector metadata from the scheduler.
@@ -96,6 +99,7 @@ class KVConnectorBase_V1(ABC):
         """
         self._connector_metadata = connector_metadata
 
+    # 清空元数据，实际上是初始化为了一个新的不含信息的元数据
     def clear_connector_metadata(self) -> None:
         """Clear the connector metadata.
 
@@ -104,6 +108,7 @@ class KVConnectorBase_V1(ABC):
         """
         self._connector_metadata = KVConnectorMetadata()
 
+    # 获取元数据
     def _get_connector_metadata(self) -> KVConnectorMetadata:
         """Get the connector metadata.
 
@@ -114,6 +119,8 @@ class KVConnectorBase_V1(ABC):
         """
         return self._connector_metadata
 
+    # 注册KV缓存，用于预注册KV缓存
+    # 主要用于nixl，对于其余的connector，这个函数是空实现
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         """
         Initialize with the KV caches. Useful for pre-registering the
@@ -124,6 +131,9 @@ class KVConnectorBase_V1(ABC):
         """
         return
 
+    # 开始加载KVC，加载的单位是layer，而不是token+
+    # 开始从 Connector 加载 KV Cache 到 vLLM 的 KV buffer，支持异步加载。
+    # 调用时机：前向推理前，允许边加载边计算
     @abstractmethod
     def start_load_kv(self, forward_context: "ForwardContext",
                       **kwargs) -> None:
@@ -143,6 +153,7 @@ class KVConnectorBase_V1(ABC):
         """
         pass
 
+    # 阻塞直到指定层的 KV 加载完成，通常在注意力层内部调用，保证异步加载已完成
     @abstractmethod
     def wait_for_layer_load(self, layer_name: str) -> None:
         """
@@ -157,6 +168,9 @@ class KVConnectorBase_V1(ABC):
         """
         pass
 
+    # 保存KVC
+    # 开始将某一层的 KV Cache 保存到 Connector，支持异步保存
+    # 调用时机：在注意力层内部，边计算边保存
     @abstractmethod
     def save_kv_layer(self, layer_name: str, kv_layer: torch.Tensor,
                       attn_metadata: "AttentionMetadata", **kwargs) -> None:
@@ -174,6 +188,7 @@ class KVConnectorBase_V1(ABC):
         """
         pass
 
+    # 阻塞直到所有保存操作完成，防止 KV buffer 被提前覆盖
     @abstractmethod
     def wait_for_save(self):
         """
@@ -185,6 +200,7 @@ class KVConnectorBase_V1(ABC):
         """
         pass
 
+    # 通知 Worker 端某些请求已完成，返回已完成异步传输的请求 id
     def get_finished(
         self, finished_req_ids: set[str]
     ) -> tuple[Optional[set[str]], Optional[set[str]]]:
@@ -205,6 +221,7 @@ class KVConnectorBase_V1(ABC):
     # Scheduler-side methods
     # ==============================
 
+    # 获取可以从外部 KV Cache 加载的新 token 数量，以及是否异步加载
     @abstractmethod
     def get_num_new_matched_tokens(
         self,
@@ -230,6 +247,11 @@ class KVConnectorBase_V1(ABC):
         """
         pass
 
+    # 更新 KVConnector 状态，在分配外部 KV Cache 块后调用
+    # 如果 get_num_new_matched_tokens 之前返回 True 的请求，
+    # 则可能被调用两次：
+    # 第一次在分配用于异步加载的块时，
+    # 第二次在加载完成后，任何额外的块分配后
     @abstractmethod
     def update_state_after_alloc(self, request: "Request",
                                  blocks: "KVCacheBlocks",
@@ -251,6 +273,7 @@ class KVConnectorBase_V1(ABC):
         """
         pass
 
+    # 构建元数据，用于在调度器和工作者之间传递信息
     @abstractmethod
     def build_connector_meta(
             self, scheduler_output: SchedulerOutput) -> KVConnectorMetadata:
@@ -265,6 +288,7 @@ class KVConnectorBase_V1(ABC):
         """
         pass
 
+    # 通知 Worker 端请求已完成，返回是否异步保存/发送，以及可选的 KVTransferParams
     def request_finished(
         self,
         request: "Request",

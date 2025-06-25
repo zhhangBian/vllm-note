@@ -386,6 +386,7 @@ class Scheduler(SchedulerInterface):
                             request)
 
                     # Get externally-cached tokens if using a KVConnector.
+                    # 检查外部的kv cache是否可以被复用
                     if self.connector is not None:
                         num_external_computed_tokens, load_kv_async = (
                             self.connector.get_num_new_matched_tokens(
@@ -459,6 +460,7 @@ class Scheduler(SchedulerInterface):
                 # This information is used to determine if a load is
                 # needed for this request.
                 if self.connector is not None:
+                    # 告知哪些需要进行upload，在worker端异步执行
                     self.connector.update_state_after_alloc(
                         request,
                         new_computed_blocks + new_blocks,
@@ -468,6 +470,7 @@ class Scheduler(SchedulerInterface):
                 # Request was already popped from self.waiting
                 # unless it was re-added above due to new_blocks being None.
                 request = self.waiting.pop_request()
+                # 检测到需要异步加载KV Cache
                 if load_kv_async:
                     # If loading async, allocate memory and put request
                     # into the WAITING_FOR_REMOTE_KV state.
@@ -587,6 +590,7 @@ class Scheduler(SchedulerInterface):
         # 1. Plan the KV cache store
         # 2. Wrap up all the KV cache load / save ops into an opaque object
         # 3. Clear the internal states of the connector
+        # 评估请求是否值得被offload
         if self.connector is not None:
             meta = self.connector.build_connector_meta(scheduler_output)
             scheduler_output.kv_connector_metadata = meta
@@ -964,10 +968,12 @@ class Scheduler(SchedulerInterface):
             request.status = finished_status
             self._free_request(request)
 
+    # 请求完成时
     def _free_request(self, request: Request) -> Optional[dict[str, Any]]:
 
         assert request.is_finished()
 
+        # 评估请求是否值得被offload
         delay_free_blocks, kv_xfer_params = self._connector_finished(request)
         self.encoder_cache_manager.free(request)
         request_id = request.request_id
@@ -976,6 +982,7 @@ class Scheduler(SchedulerInterface):
         if self.finished_req_ids_dict is not None:
             self.finished_req_ids_dict[request.client_index].add(request_id)
 
+        # 不需要offload，那么就立即释放kv cache
         if not delay_free_blocks:
             self._free_blocks(request)
 
@@ -1100,6 +1107,7 @@ class Scheduler(SchedulerInterface):
             scheduler the request during the next step.
         """
         # KV Connector:: update recv and send status from last step.
+        # 检测到接收KVC完成
         for req_id in (model_runner_output.finished_recving or ()):
             logger.debug("Finished recving KV transfer for request %s", req_id)
             self.finished_recving_kv_req_ids.add(req_id)

@@ -69,6 +69,8 @@ class SharedStorageConnectorMetadata(KVConnectorMetadata):
             ReqMeta.make_meta(token_ids, block_ids, block_size, is_store))
 
 
+# 简单的实现，更多的是用于演示接口的操作性质
+# 通过质朴的tensor存储来实现讲张量存储到磁盘中
 class SharedStorageConnector(KVConnectorBase_V1):
     # NOTE: This is Simple debug implementation of the KV connector.
     # It save / load the KV cache to / from the disk.
